@@ -32,6 +32,9 @@ jobs:
       - name: 命令行入口自检
         run: python cli.py --help
 
+      - name: 探针入口自检
+        run: python probe.py --help
+
       - name: 独立脚本自检
         run: |
           python tools/baidu_poi.py --help

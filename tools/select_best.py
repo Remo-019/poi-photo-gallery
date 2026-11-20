@@ -42,6 +42,23 @@ def safe(text: str, limit: int = 40) -> str:
     return text.strip(" .")[:limit] or "unnamed"
 
 
+def photo_rank(item: dict) -> tuple:
+    """挑图排序键：先按像素分档，同档内优先横构图与相册靠前的图。
+
+    门头照通常是横构图且多排在相册前几张；菜品、菜单、顾客照多为竖构图或
+    排在后面。像素按 25 万（约 500x500）为一档，只在同档内用构图与序号加权，
+    不为了横图牺牲清晰度。
+    """
+    w, h = item.get("宽") or 0, item.get("高") or 0
+    landscape = 1 if w >= h * 0.95 else 0
+    try:
+        idx = int(os.path.splitext(str(item.get("文件名", "")))[0][:3])
+    except (ValueError, TypeError):
+        idx = 99
+    early = 1 if idx <= 2 else 0
+    return (w * h // 250000, landscape, early, w * h, item.get("体积KB", 0))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="挑出每个 POI 最清晰的照片")
     ap.add_argument("folder", help="采集输出目录（需含 manifest.csv）")
@@ -107,12 +124,18 @@ def main() -> None:
         cands = by_poi.get(seq, [])
         if not cands:
             continue
-        best = max(cands, key=lambda x: (x["像素数"], x["体积KB"]))
+        best = max(cands, key=photo_rank)
+        reason = []
+        if best["宽"] >= best["高"] * 0.95:
+            reason.append("横构图")
+        if os.path.splitext(best["文件名"])[0][:3].isdigit() and int(os.path.splitext(best["文件名"])[0][:3]) <= 2:
+            reason.append("相册靠前")
         if best["宽"] < args.min_width:
             report.append({
                 "序号": seq, "名称": row["名称"], "入选文件": "",
                 "尺寸": f"{best['宽']}x{best['高']}",
                 "峰值尺寸": f"{best['宽']}x{best['高']}",
+                "入选理由": "低于最小宽度门槛",
                 "达标本": "否",
             })
             continue
@@ -126,6 +149,7 @@ def main() -> None:
             "入选文件": os.path.basename(dst),
             "尺寸": f"{best['宽']}x{best['高']}",
             "峰值尺寸": f"{best['宽']}x{best['高']}",
+            "入选理由": "+".join(reason) or "最高像素",
             "达标本": "是",
         })
 

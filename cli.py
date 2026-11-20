@@ -109,10 +109,14 @@ def main(argv: list[str] | None = None) -> int:
         summary.append(f"{src}：{len(rows)} 个 POI / {got} 张图")
 
         if not args.no_best:
-            poi_core.pick_best(out_dir, log=print)
-            best = os.path.join(out_dir, "best")
-            if os.path.isdir(best):
-                poi_core.build_contact_sheet(best, log=print)
+            st = poi_core.pick_best(out_dir, log=print)
+            median = st.get("median", 0)
+            if median and median < 800:
+                print(f"  ! 中位宽度只有 {median}px。原图参数（limit_1）可能已失效——"
+                      f"接口仍返回成功，但拿到的是缩略图，请先核对再使用。")
+            elif median:
+                print(f"  中位宽度 {median}px，原图参数正常。")
+            poi_core.build_sheet_paged(out_dir, per_poi=3, per_page=24, log=print)
         print()
 
     if not summary:
@@ -120,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("\n".join(summary))
     print(f"\n保存位置：{root}")
+    if not args.no_best:
+        print("建议先看总览图：每页并排显示每店 3 张，可直接定位门头照。")
     return 0
 
 

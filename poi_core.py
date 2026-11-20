@@ -431,6 +431,7 @@ def download_items(items: list[dict], out_dir: str, max_photos: int, width: int,
     os.makedirs(out_dir, exist_ok=True)
     rows: list[dict] = []
     total_files = 0
+    fetched_at = time.strftime("%Y-%m-%d %H:%M")
 
     for seq, item in enumerate(items, 1):
         if should_stop and should_stop():
@@ -476,6 +477,7 @@ def download_items(items: list[dict], out_dir: str, max_photos: int, width: int,
             "经度": item["lng"], "纬度": item["lat"],
             "坐标": item["location"], "照片数": len(urls), "已下载": saved,
             "最大尺寸": f"{best_w}x{best_h}" if best_w else "",
+            "抓取日期": fetched_at,
             "目录": folder_name if saved else "",
         })
         if on_progress:
@@ -546,6 +548,23 @@ def scan_history(root: str) -> list[dict]:
 # ------------------------------------------------------------------ 挑最优
 
 
+def photo_rank(item: dict) -> tuple:
+    """挑图排序键：先按像素分档，同档内优先横构图与相册靠前的图。
+
+    门店门头照通常是横构图，且多排在相册前几张；菜品、菜单、顾客照片多为
+    竖构图或排在后面。像素按 25 万（约 500x500）为一档，只在同一档内用构图
+    与序号加权，避免为了横图牺牲清晰度。
+    """
+    w, h = item.get("宽") or 0, item.get("高") or 0
+    landscape = 1 if w >= h * 0.95 else 0
+    try:
+        idx = int(os.path.splitext(str(item.get("文件名", "")))[0][:3])
+    except (ValueError, TypeError):
+        idx = 99
+    early = 1 if idx <= 2 else 0
+    return (w * h // 250000, landscape, early, w * h, item.get("体积KB", 0))
+
+
 def pick_best(out_dir: str, best_name: str = "best", log=print) -> dict:
     from PIL import Image
 
@@ -598,7 +617,7 @@ def pick_best(out_dir: str, best_name: str = "best", log=print) -> dict:
         cands = by_poi.get(row["序号"], [])
         if not cands:
             continue
-        best = max(cands, key=lambda x: (x["像素数"], x["体积KB"]))
+        best = max(cands, key=photo_rank)
         ext = os.path.splitext(best["文件名"])[1].lower()
         dst = os.path.join(best_dir, f"{row['序号']}_{safe_name(row['名称'])}{ext}")
         shutil.copyfile(os.path.join(out_dir, best["路径"]), dst)
@@ -688,3 +707,151 @@ def build_contact_sheet(folder: str, cols: int = 5, cell_w: int = 300, log=print
     canvas.save(out, quality=88, optimize=True)
     log(f"总览图：{out}")
     return out
+
+
+# ------------------------------------------------------------------ 多图总览
+
+def _paste_cover(canvas, src_path: str, box_w: int, box_h: int, x: int, y: int) -> bool:
+    """等比缩放后居中裁切贴到画布，失败返回 False。"""
+    from PIL import Image
+
+    try:
+        with Image.open(src_path) as im:
+            im = im.convert("RGB")
+            w0, h0 = im.size
+            if not w0 or not h0:
+                return False
+            scale = max(box_w / w0, box_h / h0)
+            im = im.resize((max(1, int(w0 * scale)), max(1, int(h0 * scale))), Image.LANCZOS)
+            left = (im.width - box_w) // 2
+            top = (im.height - box_h) // 2
+            canvas.paste(im.crop((left, top, left + box_w, top + box_h)), (x, y))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def build_sheet_paged(out_dir: str, per_poi: int = 3, per_page: int = 24,
+                      cols: int = 4, cell_w: int = 420, log=print) -> list[str]:
+    """每个 POI 并排显示前若干张，可选分页，便于人工一次看过。
+
+    与 build_contact_sheet 的区别：那个吃的是 best/ 扁平目录、每个 POI 一张；
+    这个吃的是抓取目录（含 manifest.csv），按 photo_rank 排序取每个 POI 前
+    per_poi 张。挑错一张不至于满盘皆错——同一行里就能看到备选。
+
+    per_poi:  每个 POI 显示几张（1 时退化为每店一张）
+    per_page: 每页几个 POI；0 或负数表示全部挤在一页（POI 多时图片会很细）
+    """
+    from math import ceil
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    def font(size):
+        for p in _FONTS:
+            if os.path.exists(p):
+                try:
+                    return ImageFont.truetype(p, size)
+                except OSError:
+                    continue
+        return ImageFont.load_default()
+
+    manifest = os.path.join(out_dir, "manifest.csv")
+    if not os.path.exists(manifest):
+        raise RuntimeError("找不到 manifest.csv，请先抓取")
+    with open(manifest, encoding="utf-8-sig", newline="") as fh:
+        rows = [r for r in csv.DictReader(fh) if r.get("目录")]
+
+    groups: list[tuple[dict, list[dict]]] = []
+    for row in rows:
+        sub = os.path.join(out_dir, row["目录"])
+        if not os.path.isdir(sub):
+            continue
+        cands = []
+        for name in sorted(os.listdir(sub)):
+            if not name.lower().endswith(IMG_SUFFIXES):
+                continue
+            path = os.path.join(sub, name)
+            w, h = file_image_size(path)
+            if not w or not h:
+                continue
+            cands.append({"文件名": name, "路径": path, "宽": w, "高": h,
+                          "体积KB": os.path.getsize(path) // 1024})
+        if not cands:
+            continue
+        cands.sort(key=photo_rank, reverse=True)
+        groups.append((row, cands[:max(1, per_poi)]))
+
+    if not groups:
+        raise RuntimeError("清单里没有可用的图片")
+
+    per_poi = max(1, per_poi)
+    cols = max(1, cols)
+    per_page = per_page if per_page and per_page > 0 else len(groups)
+
+    inner = 6
+    thumb_w = max(40, (cell_w - (per_poi - 1) * inner) // per_poi)
+    img_h = max(30, int(thumb_w * 0.75))
+    label_h = 66
+    cell_h = img_h + label_h
+    gap, pad, header_h = 12, 24, 60
+
+    outs: list[str] = []
+    total_pages = ceil(len(groups) / per_page)
+    title_base = os.path.basename(out_dir.rstrip("\\/"))
+
+    for page in range(total_pages):
+        chunk = groups[page * per_page:(page + 1) * per_page]
+        n_rows = ceil(len(chunk) / cols)
+        W = pad * 2 + cols * cell_w + (cols - 1) * gap
+        H = pad * 2 + header_h + n_rows * cell_h + (n_rows - 1) * gap
+        canvas = Image.new("RGB", (W, H), (250, 250, 248))
+        draw = ImageDraw.Draw(canvas)
+
+        head = f"{title_base}  共 {len(groups)} 个 POI，每店 {per_poi} 张"
+        if total_pages > 1:
+            head += f"（第 {page + 1}/{total_pages} 页）"
+        draw.text((pad, pad + 14), head, fill=(30, 30, 30), font=font(24))
+
+        name_font, meta_font = font(14), font(12)
+        for i, (row, cands) in enumerate(chunk):
+            r, c = divmod(i, cols)
+            x0 = pad + c * (cell_w + gap)
+            y0 = pad + header_h + r * (cell_h + gap)
+            for j in range(per_poi):
+                x = x0 + j * (thumb_w + inner)
+                draw.rectangle([x, y0, x + thumb_w, y0 + img_h], fill=(232, 232, 228))
+                if j < len(cands):
+                    if _paste_cover(canvas, cands[j]["路径"], thumb_w, img_h, x, y0):
+                        tag = f'{cands[j]["宽"]}x{cands[j]["高"]}'
+                        tw = meta_font.getlength(tag)
+                        draw.rectangle([x, y0 + img_h - 16, x + tw + 7, y0 + img_h],
+                                       fill=(35, 35, 35))
+                        draw.text((x + 3, y0 + img_h - 15), tag,
+                                  fill=(255, 255, 255), font=meta_font)
+            draw.rectangle([x0, y0 + img_h, x0 + cell_w, y0 + cell_h], fill=(255, 255, 255))
+            name = row.get("名称") or ""
+            while name_font.getlength(name) > cell_w - 12 and len(name) > 4:
+                name = name[:-1]
+            draw.text((x0 + 6, y0 + img_h + 3), name, fill=(20, 20, 20), font=name_font)
+
+            line = f'{row.get("序号", "")}. {(row.get("地址") or "")}'
+            while meta_font.getlength(line) > cell_w - 12 and len(line) > 4:
+                line = line[:-1]
+            draw.text((x0 + 6, y0 + img_h + 24), line, fill=(110, 110, 110), font=meta_font)
+
+            badge = (row.get("抓取日期") or "").strip()
+            badge += f'  {row.get("已下载", "0")}/{row.get("照片数", "0")} 张'
+            draw.text((x0 + 6, y0 + img_h + 44), badge.strip(),
+                      fill=(150, 150, 150), font=meta_font)
+
+        if total_pages == 1:
+            out = os.path.join(out_dir, "contact_sheet.jpg")
+        else:
+            out = os.path.join(out_dir, f"contact_sheet_p{page + 1:02d}.jpg")
+        canvas.save(out, quality=88, optimize=True)
+        outs.append(out)
+        if total_pages > 1:
+            log(f"  总览图 第 {page + 1}/{total_pages} 页：{out}")
+
+    log(f"总览图 {len(outs)} 页 -> {out_dir}")
+    return outs

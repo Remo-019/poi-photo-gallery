@@ -20,7 +20,7 @@ import poi_core
 
 APP_NAME = "POIPhotoGallery"          # 配置目录名（%LOCALAPPDATA%\POIPhotoGallery）
 DISPLAY_NAME = "POI 照片采集"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 
 
 # ------------------------------------------------------------------ 路径与配置
@@ -508,11 +508,13 @@ class App(tk.Tk):
 
                 if cfg.get("auto"):
                     self.msg_q.put(("status", f"{src}：正在挑最优图…"))
-                    poi_core.pick_best(out_dir, log=self._log)
-                    best_dir = os.path.join(out_dir, "best")
-                    if os.path.isdir(best_dir):
-                        self.msg_q.put(("status", f"{src}：正在生成总览图…"))
-                        poi_core.build_contact_sheet(best_dir, log=self._log)
+                    st = poi_core.pick_best(out_dir, log=self._log)
+                    median = st.get("median", 0)
+                    if median and median < 800:
+                        self._log(f"  ! 中位宽度只有 {median}px，原图参数可能已失效，"
+                                  f"这次拿到的多半是缩略图。")
+                    self.msg_q.put(("status", f"{src}：正在生成总览图…"))
+                    poi_core.build_sheet_paged(out_dir, per_poi=3, per_page=24, log=self._log)
                 self._log("")
 
             if not summary_parts:
@@ -559,18 +561,19 @@ class App(tk.Tk):
         threading.Thread(target=job, daemon=True).start()
 
     def _sheet(self):
-        dirs = [os.path.join(d, "best") for d in self._target_dirs()]
-        dirs = [d for d in dirs if os.path.isdir(d)]
+        dirs = self._target_dirs()
         if not dirs:
-            messagebox.showinfo("提示", "先点「挑最优图」，生成 best/ 目录。")
+            messagebox.showinfo("提示", "还没抓过数据。先点「开始抓取」。")
             return
 
         def job():
             try:
                 paths = []
                 for d in dirs:
-                    paths.append(poi_core.build_contact_sheet(d, log=self._log))
-                self.msg_q.put(("done", f"总览图已生成（{len(paths)} 张）：\n" + "\n".join(paths)))
+                    paths.extend(poi_core.build_sheet_paged(
+                        d, per_poi=3, per_page=24, log=self._log))
+                self.msg_q.put(("done", f"总览图已生成（{len(paths)} 页，每店 3 张）：\n"
+                                        + "\n".join(paths)))
                 os.startfile(paths[0])  # noqa: S606
             except Exception as exc:  # noqa: BLE001
                 self.msg_q.put(("error", str(exc)))

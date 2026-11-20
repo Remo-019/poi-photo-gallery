@@ -1,4 +1,4 @@
-﻿# POI Photo Gallery · 地图 POI 门店照片采集
+# POI Photo Gallery · 地图 POI 门店照片采集
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -20,6 +20,7 @@
 - [快速开始](#快速开始)
 - [输出结构](#输出结构)
 - [附带的独立脚本](#附带的独立脚本)
+- [健康探针](#健康探针)
 - [高德 Key](#高德-key)
 - [使用边界](#使用边界)
 - [文档](#文档)
@@ -30,8 +31,10 @@
 - **双数据源**：高德（官方 Web 服务 API）+ 百度（网页接口，免申请 Key），可分别存放、交叉比对
 - **原图优先**：高德 CDN 补 `limit_1`、百度相册去掉 `x-bce-process` 缩放参数，并实测校验真实像素
 - **按 POI 建目录**：`001_协和医院__B000A843P7/01.jpg、02.jpg…`，文件名、地址、坐标全部进清单
-- **manifest.csv**：每个机构一行，含名称 / POI ID / 分类 / 地址 / 电话 / 经纬度 / 照片数 / 已下载 / 最大尺寸
-- **挑最优 + 总览图**：按像素自动为每个机构挑一张最优图，再拼成一张总览大图，便于快速过目
+- **manifest.csv**：每个机构一行，含名称 / POI ID / 分类 / 地址 / 电话 / 经纬度 / 照片数 / 已下载 / 最大尺寸 / 抓取日期
+- **挑图不只看像素**：同像素档内优先横构图与相册靠前的图——门头照多是这样，菜品特写、菜单、顾客照不是
+- **总览图每店三张**：一张挑错整格就作废，并排三张时同格内就有备选；POI 多时自动分页
+- **静默失效会喊人**：抓完打印中位分辨率，低于 800px 直接提示「原图参数可能已失效」——这条最要命，因为接口照样返回 200
 - **两种入口**：`gui.py`（tkinter 桌面界面）/ `cli.py`（命令行，可脚本化、可 CI）
 - **单文件打包**：PyInstaller spec 已备好，可产出免安装 exe
 - **仅依赖标准库**：采集全程只用 Python 标准库；Pillow 只在「挑最优 / 总览图」时需要
@@ -110,12 +113,15 @@ python gui.py
 out/20261120_170529_北京市_医院/
 ├── 高德/
 │   ├── 001_协和医院__B000A843P7/   01.jpg  02.jpg  …
-│   ├── manifest.csv                名称 / 地址 / 分类 / 经纬度 / 尺寸
+│   ├── manifest.csv                名称 / 地址 / 分类 / 经纬度 / 尺寸 / 抓取日期
 │   ├── photo_inventory.csv         逐张分辨率盘点
 │   ├── best/                       每机构一张最优图
-│   └── contact_sheet.jpg           总览大图
+│   ├── contact_sheet.jpg           总览图（POI 少于此一页时）
+│   └── contact_sheet_p01.jpg …     总览图分页（每店 3 张，每页 24 个 POI）
 └── 百度/                           结构同上，另含电话字段
 ```
+
+`manifest.csv` 里的「抓取日期」是**抓取当天**的时间，不是照片的拍摄日期——接口不提供拍摄时间，这一点必须记住：照片反映的是抓取当日库内的状态，门店换招牌或搬迁后不会自动更新。
 
 ## 附带的独立脚本
 
@@ -124,15 +130,40 @@ out/20261120_170529_北京市_医院/
 | 脚本 | 作用 |
 |---|---|
 | `tools/baidu_poi.py` | 只跑百度、单文件版（免 Key），适合快速验证某地某关键词能抓到什么 |
-| `tools/select_best.py` | 按已有 `manifest.csv` 为每个机构挑最优图并盘点分辨率 |
-| `tools/make_contact_sheet.py` | 把某目录下的图拼成总览大图（需 Pillow） |
+| `tools/select_best.py` | 按已有 `manifest.csv` 为每个机构挑最优图并盘点分辨率（`_report.csv` 会写明入选理由） |
+| `tools/make_contact_sheet.py` | 把某目录下的图拼成总览图，可指定每店几张、每页几个 POI |
 
 ```bash
 # 百度单源（--city-code 是百度城市码，按官方 citycode 表查）
 python tools/baidu_poi.py --keyword 医院 --city-code 132 --max-poi 10 --out ./baidu_poi
 python tools/select_best.py ./out/20261120_170529_北京市_医院/高德
-python tools/make_contact_sheet.py ./out/20261120_170529_北京市_医院/高德/best --cols 6
+# 每店 3 张、每页 24 个 POI 的总览图
+python tools/make_contact_sheet.py ./out/20261120_170529_北京市_医院/高德 --per-poi 3 --per-page 24
+# 只拼 best/ 里挑好的单张
+python tools/make_contact_sheet.py ./out/20261120_170529_北京市_医院/高德/best --flat
 ```
+
+## 健康探针
+
+整个项目的价值建立在高德 CDN 的 `limit_1` 参数上。哪天它被静默忽略，接口照常返回成功、退出码仍是 0，只是图片全变成 500px 缩略图——**崩溃会被人发现，静默失效会进报告**。
+
+`probe.py` 就是为这条准备的：一次搜索 + 几张图，判断「还能不能拿到原图」。
+
+```bash
+set AMAP_KEY=你的key                      # macOS/Linux: export AMAP_KEY=...
+python probe.py                           # 默认抽查 3 个 POI、中位宽度低于 1200 即报警
+python probe.py --json probe_history.json  # 追加一行历史，便于看趋势
+```
+
+退出码：`0` 正常 / `1` 中位宽度低于阈值 / `2` 参数缺失或调用失败。放进定时任务，连续两天非 0 就该去核对接口了。
+
+| 参数 | 说明 |
+|---|---|
+| `--city` / `--keywords` / `--types` | 抽查用的城市、关键词、分类码，默认 北京市 / 医院 / 090000 |
+| `--poi` / `--photos` | 抽查几个 POI、每个取几张，默认 3 / 3 |
+| `--min-width` | 中位宽度阈值，默认 1200 |
+| `--json` | 结果追加到指定 JSON 文件 |
+| `--keep` | 保留下载的图片，便于人工核对 |
 
 ## 高德 Key
 
