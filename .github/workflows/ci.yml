@@ -18,6 +18,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.13"]
+    # Windows runner 的控制台默认是 cp1252，脚本打印中文会抛 UnicodeEncodeError。
+    # 这两个变量让所有平台统一按 UTF-8 输出。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
 
     steps:
       - uses: actions/checkout@v4
@@ -26,8 +31,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # 依赖必须先装。select_best / make_contact_sheet 在缺少 Pillow 时
+      # 会直接以退出码 1 结束，--help 也走不到。
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -c "import PIL, sys; print('Pillow', PIL.__version__, 'on', sys.version.split()[0])"
+
       - name: 语法检查
-        run: python -m compileall -q poi_core.py gui.py cli.py tools
+        run: python -m compileall -q poi_core.py gui.py cli.py probe.py tools
 
       - name: 命令行入口自检
         run: python cli.py --help
@@ -41,15 +54,12 @@ jobs:
           python tools/select_best.py --help
           python tools/make_contact_sheet.py --help
 
-      - name: 安装可选依赖复检
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -c "import PIL, sys; print('Pillow', PIL.__version__, 'on', sys.version.split()[0])"
-
   gui-import:
     name: GUI 导入检查
     runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +69,9 @@ jobs:
 
       - name: 安装 tkinter
         run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: 安装 Pillow
+        run: python -m pip install -r requirements.txt
 
       - name: 导入 gui 模块（不启动窗口）
         run: python -c "import gui; print('gui ok', gui.DISPLAY_NAME, gui.APP_VERSION)"
