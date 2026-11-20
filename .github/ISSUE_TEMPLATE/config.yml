@@ -1,0 +1,5 @@
+﻿blank_issues_enabled: false
+contact_links:
+  - name: 先看技术文档
+    url: https://github.com/Remo-019/poi-photo-gallery/blob/main/docs/技术要点.md
+    about: 缩略图为什么是 500px、limit_1 怎么来的、百度相册参数怎么去，答案在这里

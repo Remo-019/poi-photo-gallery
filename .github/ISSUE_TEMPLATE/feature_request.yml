@@ -1,0 +1,34 @@
+name: 功能建议
+description: 新的数据源、新的输出格式、新的采集策略
+labels: [enhancement]
+body:
+  - type: textarea
+    id: scene
+    attributes:
+      label: 使用场景
+      description: 你在做什么事情的时候觉得缺了这个功能
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的做法
+      description: 命令行长什么样、输出结构怎么变、界面上加在哪里
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternative
+    attributes:
+      label: 你目前是怎么绕过去的
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: 参与意愿
+      options:
+        - label: 我可以提 PR
+        - label: 我可以帮忙测试

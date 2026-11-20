@@ -1,0 +1,34 @@
+# ---- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 采集产物（别把几百兆图片提交上去）
+out/
+poi_photos*/
+抓取结果/
+*.csv
+*.jpg
+*.jpeg
+*.png
+*.webp
+!docs/**/*.png
+
+# ---- 本地配置与密钥（注意别把 Key 提交）
+config.json
+.env
+*.local.json
+
+# ---- 打包产物
+build/
+dist/
+*.spec.bak
+
+# ---- 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

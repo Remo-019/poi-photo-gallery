@@ -1,0 +1,2 @@
+# 开发与打包用依赖（运行时只需 requirements.txt 里的 Pillow）
+pyinstaller>=6.0
