@@ -29,7 +29,7 @@
 ## 特性
 
 - **双数据源**：高德（官方 Web 服务 API）+ 百度（网页接口，免申请 Key），可分别存放、交叉比对
-- **原图优先**：高德 CDN 补 `limit_1`、百度相册去掉 `x-bce-process` 缩放参数，并实测校验真实像素
+- **原图优先**：高德 CDN 追加 `x-oss-process=image/resize,w_5000,limit_1`（`limit_1` 禁止上采样，拿到的才是真原图）、百度相册去掉 `x-bce-process` 缩放参数，并实测校验真实像素
 - **按 POI 建目录**：`001_协和医院__B000A843P7/01.jpg、02.jpg…`，文件名、地址、坐标全部进清单
 - **manifest.csv**：每个机构一行，含名称 / POI ID / 分类 / 地址 / 电话 / 经纬度 / 照片数 / 已下载 / 最大尺寸 / 抓取日期
 - **挑图不只看像素**：同像素档内优先横构图与相册靠前的图——门头照多是这样，菜品特写、菜单、顾客照不是
@@ -164,6 +164,39 @@ python probe.py --json probe_history.json  # 追加一行历史，便于看趋�
 | `--min-width` | 中位宽度阈值，默认 1200 |
 | `--json` | 结果追加到指定 JSON 文件 |
 | `--keep` | 保留下载的图片，便于人工核对 |
+
+### 挂到定时任务上
+
+探针只有真的每天跑，才有意义。三种挂法，按你手上有哪台机器选一种。
+
+**① GitHub Actions（最省事，仓库里已经配好）**
+
+`.github/workflows/probe.yml` 已经写好，每天北京时间 09:00 自动跑一次。你只需要把 Key 放进去：
+
+1. 仓库 → Settings → Secrets and variables → Actions → New repository secret
+2. Name 填 `AMAP_KEY`，Secret 填你的高德 Key
+3. 想立刻验证：Actions → 探针 → Run workflow
+
+没配 secret 时这个 workflow 会打印一条 notice 直接跳过，不会天天给你发失败邮件。探针失败时 GitHub 会给你发邮件，历史记录作为 artifact 保留 90 天。
+
+**② Windows 计划任务**
+
+```powershell
+# 每天 09:00 跑一次，失败也照跑（错误码记入任务历史）
+schtasks /create /tn "POI探针" /tr "python C:\path\to\poi-photo-gallery\probe.py --json C:\path\to\probe_history.json" /sc daily /st 09:00 /rl limited
+```
+
+要在任务里带上 Key，先在系统环境变量里设 `AMAP_KEY`（`setx AMAP_KEY 你的key`，重开终端生效），`schtasks` 创建的任务会继承。
+
+**③ Linux / macOS crontab**
+
+```cron
+0 9 * * * cd /path/to/poi-photo-gallery && AMAP_KEY=你的key /usr/bin/python3 probe.py --json probe_history.json || echo "POI 探针失败，去核对高德接口" | mail -s "POI probe failed" you@example.com
+```
+
+`||` 后面接你的通知方式：`mail`、`curl` 打企业微信机器人 webhook、或者写进一个告警文件让别的监控捡走。
+
+> 判读口径：偶发一次 `1` 可能是网络抖动，**连续两天非 0 才说明接口真的变了**。别一红就改代码。
 
 ## 高德 Key
 
