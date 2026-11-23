@@ -47,8 +47,6 @@ CTRIP_HOSTS = ("c-ctrip.com",)
 
 def _get(url: str, timeout: int = 25, retries: int = 3) -> bytes:
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     last = None
     for i in range(retries):
         try:

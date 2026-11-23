@@ -66,6 +66,10 @@ def photo_rank(item: dict) -> tuple:
     门头照通常是横构图且多排在相册前几张；菜品、菜单、顾客照多为竖构图或
     排在后面。像素按 25 万（约 500x500）为一档，只在同档内用构图与序号加权，
     不为了横图牺牲清晰度。
+
+    注意：本函数是 poi_core.photo_rank 的独立副本（tools 脚本可单独拷走用，
+    不 import poi_core）。改排序规则时三处必须同步：poi_core.py / select_best.py /
+    make_contact_sheet.py。
     """
     w, h = item.get("宽") or 0, item.get("高") or 0
     landscape = 1 if w >= h * 0.95 else 0

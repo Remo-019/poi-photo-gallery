@@ -48,9 +48,9 @@ class StopRequested(Exception):
 
 def http_get(url: str, headers: dict | None = None, timeout: int = 25, retries: int = 3,
              should_stop=None) -> bytes:
+    # 默认启用证书校验：高德/百度/阿里 OSS/百度 BOS 均为正规 CA 签发，无需全局关闭。
+    # 如个别 CDN 证书链异常导致下载失败，再针对性放行，不要整体 CERT_NONE。
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     last = None
     for attempt in range(retries):
         if should_stop and should_stop():
@@ -428,6 +428,18 @@ def baidu_photo_urls(uid: str, should_stop=None, log=print) -> list[str]:
 # ------------------------------------------------------------------ 下载
 
 
+def _write_manifest(out_dir: str, rows: list[dict], log=print) -> None:
+    """把已收集的行写进 manifest.csv。没有行时不动文件。"""
+    if not rows:
+        return
+    path = os.path.join(out_dir, "manifest.csv")
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    log(f"清单已保存：{path}")
+
+
 def download_items(items: list[dict], out_dir: str, max_photos: int, width: int, delay: float,
                    log=print, on_progress=None, should_stop=None) -> list[dict]:
     os.makedirs(out_dir, exist_ok=True)
@@ -435,44 +447,8 @@ def download_items(items: list[dict], out_dir: str, max_photos: int, width: int,
     total_files = 0
     fetched_at = time.strftime("%Y-%m-%d %H:%M")
 
-    for seq, item in enumerate(items, 1):
-        if should_stop and should_stop():
-            raise StopRequested()
-        urls = item["photos"] if max_photos <= 0 else item["photos"][:max_photos]
-        folder_name = f"{seq:03d}_{safe_name(item['name'])}__{item['poi_id']}"
-        folder = os.path.join(out_dir, folder_name)
-        log(f"[{seq}/{len(items)}] {item['name']}（{len(urls)} 张）")
-
-        saved = 0
-        best_w = best_h = 0
-        if urls:
-            os.makedirs(folder, exist_ok=True)
-            for i, url in enumerate(urls, 1):
-                if should_stop and should_stop():
-                    raise StopRequested()
-                try:
-                    real = upscale_url(url, width)
-                    data = http_get(real, headers={
-                        "Referer": "https://map.baidu.com/" if item.get("source") == "baidu"
-                        else "https://www.amap.com/"}, should_stop=should_stop)
-                    if len(data) < 2000:
-                        continue
-                    path = os.path.join(folder, f"{i:02d}{guess_ext(data, real)}")
-                    with open(path, "wb") as fh:
-                        fh.write(data)
-                    w, h = image_size(data)
-                    if w > best_w:
-                        best_w, best_h = w, h
-                    saved += 1
-                    total_files += 1
-                    log(f"      ✓ {os.path.basename(path)}  {w}x{h}  {len(data)//1024} KB")
-                except StopRequested:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    log(f"      ✗ 第 {i} 张失败：{exc}")
-                time.sleep(delay / 2)
-
-        rows.append({
+    def _row(seq, item, folder_name, urls, saved, best_w, best_h):
+        return {
             "序号": seq, "名称": item["name"], "POI_ID": item["poi_id"],
             "分类": item.get("type_name", ""), "分类码": item["typecode"],
             "地址": item["address"], "电话": item.get("tel", ""),
@@ -481,17 +457,55 @@ def download_items(items: list[dict], out_dir: str, max_photos: int, width: int,
             "最大尺寸": f"{best_w}x{best_h}" if best_w else "",
             "抓取日期": fetched_at,
             "目录": folder_name if saved else "",
-        })
-        if on_progress:
-            on_progress(seq, len(items))
+        }
 
-    if rows:
-        path = os.path.join(out_dir, "manifest.csv")
-        with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
-        log(f"清单已保存：{path}")
+    try:
+        for seq, item in enumerate(items, 1):
+            if should_stop and should_stop():
+                raise StopRequested()
+            urls = item["photos"] if max_photos <= 0 else item["photos"][:max_photos]
+            folder_name = f"{seq:03d}_{safe_name(item['name'])}__{item['poi_id']}"
+            folder = os.path.join(out_dir, folder_name)
+            log(f"[{seq}/{len(items)}] {item['name']}（{len(urls)} 张）")
+
+            saved = 0
+            best_w = best_h = 0
+            if urls:
+                os.makedirs(folder, exist_ok=True)
+                for i, url in enumerate(urls, 1):
+                    if should_stop and should_stop():
+                        # 停止前把当前 POI 已下载的进度记进清单，避免「磁盘有图、清单无记录」
+                        rows.append(_row(seq, item, folder_name, urls, saved, best_w, best_h))
+                        raise StopRequested()
+                    try:
+                        real = upscale_url(url, width)
+                        data = http_get(real, headers={
+                            "Referer": "https://map.baidu.com/" if item.get("source") == "baidu"
+                            else "https://www.amap.com/"}, should_stop=should_stop)
+                        if len(data) < 2000:
+                            continue
+                        path = os.path.join(folder, f"{i:02d}{guess_ext(data, real)}")
+                        with open(path, "wb") as fh:
+                            fh.write(data)
+                        w, h = image_size(data)
+                        if w > best_w:
+                            best_w, best_h = w, h
+                        saved += 1
+                        total_files += 1
+                        log(f"      ✓ {os.path.basename(path)}  {w}x{h}  {len(data)//1024} KB")
+                    except StopRequested:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"      ✗ 第 {i} 张失败：{exc}")
+                    time.sleep(delay / 2)
+
+            rows.append(_row(seq, item, folder_name, urls, saved, best_w, best_h))
+            if on_progress:
+                on_progress(seq, len(items))
+    finally:
+        # 无论正常完成还是中途停止/异常，都把已下载的清单落盘
+        _write_manifest(out_dir, rows, log)
+
     log(f"完成：{len(items)} 个 POI，下载 {total_files} 张图")
     return rows
 

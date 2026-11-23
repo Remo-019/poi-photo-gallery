@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--amap-key", default=None,
                    help="高德 Web 服务 Key；不填则读环境变量 AMAP_KEY")
     p.add_argument("--types", default=None,
-                   help="高德 POI 分类码，可选，如 090100（医疗机构）")
+                   help="高德 POI 分类码，可选，如 090100（综合医院，属 090000 医疗保健大类）")
     p.add_argument("--delay", type=float, default=0.3,
                    help="下载每张图之间的间隔秒数（默认 0.3，别设 0）")
     p.add_argument("--no-best", action="store_true",

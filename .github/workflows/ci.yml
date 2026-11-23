@@ -40,7 +40,7 @@ jobs:
           python -c "import PIL, sys; print('Pillow', PIL.__version__, 'on', sys.version.split()[0])"
 
       - name: 语法检查
-        run: python -m compileall -q poi_core.py gui.py cli.py probe.py tools
+        run: python -m compileall -q poi_core.py gui.py cli.py probe.py tools tests
 
       - name: 命令行入口自检
         run: python cli.py --help
@@ -53,6 +53,11 @@ jobs:
           python tools/baidu_poi.py --help
           python tools/select_best.py --help
           python tools/make_contact_sheet.py --help
+
+      - name: 单元测试
+        run: |
+          python -m pip install pytest
+          python -m pytest tests -q
 
   gui-import:
     name: GUI 导入检查
