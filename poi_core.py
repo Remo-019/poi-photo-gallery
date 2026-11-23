@@ -387,22 +387,24 @@ def baidu_search(keyword: str, city: str, max_poi: int, delay: float = 0.8,
     for item in results:
         if should_stop and should_stop():
             raise StopRequested()
-        item["photos"] = baidu_photo_urls(item["poi_id"], should_stop=should_stop)
+        item["photos"] = baidu_photo_urls(item["poi_id"], should_stop=should_stop, log=log)
         time.sleep(delay)
     return results
 
 
-def baidu_photo_urls(uid: str, should_stop=None) -> list[str]:
+def baidu_photo_urls(uid: str, should_stop=None, log=print) -> list[str]:
     if not uid:
         return []
     try:
         d = json.loads(_baidu_get(f"https://map.baidu.com/?qt=inf&uid={uid}", should_stop)
                        .decode("utf-8", "replace"))
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        log(f"  ! 百度相册请求失败（uid={uid}）：{exc}")
         return []
     try:
         di = d["content"]["ext"]["detail_info"]
     except (KeyError, TypeError):
+        log(f"  ! 百度相册响应缺 detail_info（uid={uid}），该 POI 无相册")
         return []
 
     raw: list[str] = []
@@ -640,73 +642,9 @@ def pick_best(out_dir: str, best_name: str = "best", log=print) -> dict:
 
 _FONTS = [
     r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhl.ttc", r"C:\Windows\Fonts\simhei.ttf",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
 ]
-
-
-def build_contact_sheet(folder: str, cols: int = 5, cell_w: int = 300, log=print) -> str:
-    from math import ceil
-
-    from PIL import Image, ImageDraw, ImageFont
-
-    def font(size):
-        for p in _FONTS:
-            if os.path.exists(p):
-                try:
-                    return ImageFont.truetype(p, size)
-                except OSError:
-                    continue
-        return ImageFont.load_default()
-
-    names = sorted(n for n in os.listdir(folder) if n.lower().endswith(IMG_SUFFIXES))
-    if not names:
-        raise RuntimeError("目录里没有图片")
-
-    img_h = int(cell_w * 0.75)
-    label_h = 74
-    cell_h = img_h + label_h
-    gap, pad, header_h = 12, 24, 64
-    rows_n = ceil(len(names) / cols)
-    W = pad * 2 + cols * cell_w + (cols - 1) * gap
-    H = pad * 2 + header_h + rows_n * cell_h + (rows_n - 1) * gap
-
-    canvas = Image.new("RGB", (W, H), (250, 250, 248))
-    draw = ImageDraw.Draw(canvas)
-    draw.text((pad, pad + 12), f"{os.path.basename(folder)}  共 {len(names)} 张",
-              fill=(30, 30, 30), font=font(26))
-
-    name_font, meta_font = font(15), font(13)
-    for idx, fn in enumerate(names):
-        r, c = divmod(idx, cols)
-        x = pad + c * (cell_w + gap)
-        y = pad + header_h + r * (cell_h + gap)
-        draw.rectangle([x, y, x + cell_w, y + img_h], fill=(232, 232, 228))
-        try:
-            with Image.open(os.path.join(folder, fn)) as src:
-                src = src.convert("RGB")
-                w0, h0 = src.size
-                scale = max(cell_w / w0, img_h / h0)
-                src = src.resize((max(1, int(w0 * scale)), max(1, int(h0 * scale))), Image.LANCZOS)
-                left = (src.width - cell_w) // 2
-                top = (src.height - img_h) // 2
-                canvas.paste(src.crop((left, top, left + cell_w, top + img_h)), (x, y))
-        except Exception:  # noqa: BLE001
-            pass
-        draw.rectangle([x, y + img_h, x + cell_w, y + cell_h], fill=(255, 255, 255))
-        label = os.path.splitext(fn)[0]
-        while name_font.getlength(label) > cell_w - 12 and len(label) > 4:
-            label = label[:-1]
-        draw.text((x + 6, y + img_h + 8), label, fill=(20, 20, 20), font=name_font)
-        try:
-            with Image.open(os.path.join(folder, fn)) as im:
-                info = f"{im.size[0]}x{im.size[1]}"
-        except Exception:  # noqa: BLE001
-            info = ""
-        draw.text((x + 6, y + img_h + 34), info, fill=(120, 120, 120), font=meta_font)
-
-    out = os.path.join(os.path.dirname(folder.rstrip("\\/")), "contact_sheet.jpg")
-    canvas.save(out, quality=88, optimize=True)
-    log(f"总览图：{out}")
-    return out
 
 
 # ------------------------------------------------------------------ 多图总览
@@ -735,8 +673,7 @@ def build_sheet_paged(out_dir: str, per_poi: int = 3, per_page: int = 24,
                       cols: int = 4, cell_w: int = 420, log=print) -> list[str]:
     """每个 POI 并排显示前若干张，可选分页，便于人工一次看过。
 
-    与 build_contact_sheet 的区别：那个吃的是 best/ 扁平目录、每个 POI 一张；
-    这个吃的是抓取目录（含 manifest.csv），按 photo_rank 排序取每个 POI 前
+    吃的是抓取目录（含 manifest.csv），按 photo_rank 排序取每个 POI 前
     per_poi 张。挑错一张不至于满盘皆错——同一行里就能看到备选。
 
     per_poi:  每个 POI 显示几张（1 时退化为每店一张）
