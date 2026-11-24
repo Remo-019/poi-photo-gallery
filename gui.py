@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """地图 POI 照片采集 —— 图形界面。
 
 打包命令见 build.bat。
@@ -20,7 +20,7 @@ import poi_core
 
 APP_NAME = "POIPhotoGallery"          # 配置目录名（%LOCALAPPDATA%\POIPhotoGallery）
 DISPLAY_NAME = "POI 照片采集"
-APP_VERSION = "1.1"
+APP_VERSION = "1.1.2"
 
 
 # ------------------------------------------------------------------ 路径与配置
@@ -519,6 +519,12 @@ class App(tk.Tk):
 
             if not summary_parts:
                 raise RuntimeError("两个来源都没搜到结果。检查城市名（建议用标准区县名）或关键词。")
+
+            # 双源对照表：高德、百度的地址与电话分列，便于逐行核对
+            try:
+                poi_core.build_merge_table(root, log=self._log)
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"  ! 对照表生成失败：{exc}")
 
             summary = "\n".join(summary_parts) + f"\n\n保存位置：{root}"
             self.msg_q.put(("done", summary))

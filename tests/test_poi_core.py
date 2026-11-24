@@ -143,6 +143,69 @@ def test_upscale_url_skips_if_already_has_process():
     assert poi_core.upscale_url(u, 5000) == u
 
 
+# ---------------------------------------------------------------- _norm_name
+
+def test_norm_name_drops_bracket_and_space():
+    # 同一家机构在高德、百度的写法常差一对括号或一个空格
+    assert poi_core._norm_name("测试医院（东院）") == "测试医院"
+    assert poi_core._norm_name("测试医院(东院)") == "测试医院"
+    assert poi_core._norm_name(" 和平 药店 ") == "和平药店"
+    assert poi_core._norm_name("华联·超市") == "华联超市"
+    assert poi_core._norm_name("") == ""
+
+
+# ---------------------------------------------------------------- build_merge_table
+
+def _write_manifest(folder: str, rows: list[dict]) -> None:
+    import csv as _csv
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "manifest.csv")
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = _csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+
+
+def test_build_merge_table_splits_address_and_phone_by_source(tmp_path):
+    import csv as _csv
+    base = {"序号": "1", "分类": "综合医院", "分类码": "090100",
+            "经度": "116.1", "纬度": "39.1", "照片数": "4",
+            "已下载": "3", "最大尺寸": "1600x1200", "抓取日期": "2026-11-24 10:00",
+            "目录": "001_x", "来源": "高德", "坐标": "116.1,39.1"}
+    _write_manifest(str(tmp_path / "高德"), [
+        dict(base, 名称="测试医院（东院）", POI_ID="A1", 地址="高德路1号", 电话="010-1111"),
+        dict(base, 序号="2", 名称="只有高德的店", POI_ID="A2", 地址="高德路2号", 电话=""),
+    ])
+    _write_manifest(str(tmp_path / "百度"), [
+        dict(base, 名称="测试医院", POI_ID="B1", 地址="百度路88号", 电话="010-2222;010-3333"),
+        dict(base, 序号="2", 名称="只有百度的店", POI_ID="B2", 地址="百度路99号", 电话="010-4444"),
+    ])
+
+    path = poi_core.build_merge_table(str(tmp_path), log=lambda *_: None)
+    assert path and os.path.exists(path)
+
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        rows = list(_csv.DictReader(fh))
+
+    assert len(rows) == 3
+    by_state = {r["匹配状态"]: r for r in rows}
+    assert set(by_state) == {"两源都有", "仅高德", "仅百度"}
+
+    both = by_state["两源都有"]
+    # 地址与电话必须各归各列，不能混成一列
+    assert both["高德地址"] == "高德路1号"
+    assert both["高德电话"] == "010-1111"
+    assert both["百度地址"] == "百度路88号"
+    assert both["百度电话"] == "010-2222;010-3333"
+
+    assert by_state["仅高德"]["百度地址"] == ""
+    assert by_state["仅百度"]["高德地址"] == ""
+
+
+def test_build_merge_table_returns_none_without_manifests(tmp_path):
+    assert poi_core.build_merge_table(str(tmp_path), log=lambda *_: None) is None
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))

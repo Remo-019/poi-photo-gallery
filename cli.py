@@ -122,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     if not summary:
         print("两个来源都没搜到结果。检查城市名（建议用标准区县名）或关键词。", file=sys.stderr)
         return 1
+
+    # 双源都跑过时，额外生成一张分列存放地址/电话的对照表
+    if not args.dry_run:
+        poi_core.build_merge_table(root, log=print)
+
     print("\n".join(summary))
     print(f"\n保存位置：{root}")
     if not args.no_best:

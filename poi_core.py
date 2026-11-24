@@ -254,14 +254,21 @@ def amap_search(key: str, keywords: str, city: str, types: str | None, max_poi: 
             lng, lat = ("", "")
             if "," in loc:
                 lng, lat = [x.strip() for x in loc.split(",", 1)]
+            # v5 接口的电话在 business.tel 下，顶层没有 tel 字段。
+            # 之前直接取 poi["tel"] 会整列为空（静默失效），这里两处都兜。
+            biz = poi.get("business") if isinstance(poi.get("business"), dict) else {}
+            tel = biz.get("tel") or poi.get("tel") or ""
+            if isinstance(tel, (list, tuple)):
+                tel = ";".join(str(x) for x in tel if x)
             results.append({
+                "source": "高德",
                 "poi_id": poi.get("id", ""),
                 "name": poi.get("name", ""),
                 "address": poi.get("address") if isinstance(poi.get("address"), str) else "",
                 "typecode": poi.get("typecode", ""),
                 "type_name": poi.get("type", "") if isinstance(poi.get("type"), str) else "",
                 "lng": lng, "lat": lat, "location": loc,
-                "tel": poi.get("tel", "") if isinstance(poi.get("tel"), str) else "",
+                "tel": str(tel),
                 "adname": poi.get("adname", "") if isinstance(poi.get("adname"), str) else "",
                 "cityname": poi.get("cityname", "") if isinstance(poi.get("cityname"), str) else "",
                 "photos": dedupe(photos),
@@ -366,6 +373,7 @@ def baidu_search(keyword: str, city: str, max_poi: int, delay: float = 0.8,
             if city and city[:2] not in blob and keyword[:2] not in blob:
                 continue
             results.append({
+                "source": "baidu",
                 "poi_id": p.get("uid", ""),
                 "name": name,
                 "address": addr,
@@ -373,7 +381,9 @@ def baidu_search(keyword: str, city: str, max_poi: int, delay: float = 0.8,
                 "type_name": p.get("std_tag", ""),
                 "lng": "", "lat": "",
                 "location": "",
-                "tel": p.get("tel", ""),
+                "tel": p.get("tel", "") if isinstance(p.get("tel"), str) else "",
+                "adname": p.get("addr", "") if isinstance(p.get("addr"), str) else "",
+                "cityname": p.get("cityname", "") if isinstance(p.get("cityname"), str) else "",
                 "photos": [],
             })
             if max_poi and len(results) >= max_poi:
@@ -449,7 +459,8 @@ def download_items(items: list[dict], out_dir: str, max_photos: int, width: int,
 
     def _row(seq, item, folder_name, urls, saved, best_w, best_h):
         return {
-            "序号": seq, "名称": item["name"], "POI_ID": item["poi_id"],
+            "序号": seq, "名称": item["name"], "来源": item.get("source", ""),
+            "POI_ID": item["poi_id"],
             "分类": item.get("type_name", ""), "分类码": item["typecode"],
             "地址": item["address"], "电话": item.get("tel", ""),
             "经度": item["lng"], "纬度": item["lat"],
@@ -806,3 +817,88 @@ def build_sheet_paged(out_dir: str, per_poi: int = 3, per_page: int = 24,
 
     log(f"总览图 {len(outs)} 页 -> {out_dir}")
     return outs
+
+
+# ------------------------------------------------------------------ 双源对照表
+
+def _norm_name(name: str) -> str:
+    """名称归一化，用于跨源匹配同一个机构。
+
+    去掉括号内容、空白与常见后缀，避免「XX医院（东院）」和「XX医院东院」
+    被当成两家。
+    """
+    s = (name or "").strip()
+    s = re.sub(r"[（(][^）)]*[）)]", "", s)
+    s = re.sub(r"[\s·・]+", "", s)
+    return s
+
+
+def _read_manifest(path: str) -> list[dict]:
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
+            return list(csv.DictReader(fh))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def build_merge_table(root: str, log=print) -> str | None:
+    """把同一轮抓取里高德、百度两份清单合并成一张对照表。
+
+    高德与百度的地址、电话写法经常不一致，合并成一张表并**分列存放**，
+    才能一眼看出哪一家有电话、哪一家地址更完整。
+
+    输出：<root>/高德百度对照表.csv
+    若两个来源都在清单里出现，会按名称归一化后对齐到同一行。
+    """
+    amap_rows = _read_manifest(os.path.join(root, "高德", "manifest.csv"))
+    baidu_rows = _read_manifest(os.path.join(root, "百度", "manifest.csv"))
+    if not amap_rows and not baidu_rows:
+        return None
+
+    def index(rows):
+        out = {}
+        for r in rows:
+            key = _norm_name(r.get("名称", ""))
+            if key and key not in out:
+                out[key] = r
+        return out
+
+    a_idx, b_idx = index(amap_rows), index(baidu_rows)
+    keys = list(a_idx) + [k for k in b_idx if k not in a_idx]
+
+    out_rows = []
+    for i, key in enumerate(keys, 1):
+        a = a_idx.get(key, {})
+        b = b_idx.get(key, {})
+        name = a.get("名称") or b.get("名称") or ""
+        out_rows.append({
+            "序号": i,
+            "机构名称": name,
+            "匹配状态": "两源都有" if a and b else ("仅高德" if a else "仅百度"),
+            "高德地址": a.get("地址", ""),
+            "高德电话": a.get("电话", ""),
+            "高德分类": a.get("分类", ""),
+            "高德坐标": a.get("坐标", ""),
+            "高德POI_ID": a.get("POI_ID", ""),
+            "百度地址": b.get("地址", ""),
+            "百度电话": b.get("电话", ""),
+            "百度分类": b.get("分类", ""),
+            "百度POI_ID": b.get("POI_ID", ""),
+            "高德图片": a.get("已下载", ""),
+            "百度图片": b.get("已下载", ""),
+            "抓取日期": a.get("抓取日期") or b.get("抓取日期") or "",
+        })
+
+    path = os.path.join(root, "高德百度对照表.csv")
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(out_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(out_rows)
+
+    both = sum(1 for r in out_rows if r["匹配状态"] == "两源都有")
+    log(f"对照表已生成：{path}")
+    log(f"  共 {len(out_rows)} 家机构，其中两源都有 {both} 家、仅高德 "
+        f"{len(amap_rows) - both} 家、仅百度 {len(baidu_rows) - both} 家")
+    return path
